@@ -1,8 +1,8 @@
+```javascript
 require("dotenv").config();
 
 const express = require("express");
 const fs = require("fs");
-const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
@@ -16,7 +16,7 @@ const CHATS_FILE = "./data/chats.json";
 
 const JWT_SECRET = process.env.JWT_SECRET || "secret123";
 
-/* ---------------- CREATE FILES IF MISSING ---------------- */
+/* ---------- CREATE FILES ---------- */
 
 if (!fs.existsSync("./data")) {
   fs.mkdirSync("./data");
@@ -30,7 +30,7 @@ if (!fs.existsSync(CHATS_FILE)) {
   fs.writeFileSync(CHATS_FILE, "[]");
 }
 
-/* ---------------- HELPERS ---------------- */
+/* ---------- HELPERS ---------- */
 
 function readJSON(file) {
   return JSON.parse(fs.readFileSync(file));
@@ -40,7 +40,7 @@ function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-/* ---------------- REGISTER ---------------- */
+/* ---------- REGISTER ---------- */
 
 app.post("/api/register", async (req, res) => {
 
@@ -71,7 +71,7 @@ app.post("/api/register", async (req, res) => {
 
 });
 
-/* ---------------- LOGIN ---------------- */
+/* ---------- LOGIN ---------- */
 
 app.post("/api/login", async (req, res) => {
 
@@ -109,7 +109,7 @@ app.post("/api/login", async (req, res) => {
 
 });
 
-/* ---------------- CHAT ---------------- */
+/* ---------- CHAT ---------- */
 
 app.post("/api/chat", async (req, res) => {
 
@@ -127,7 +127,6 @@ app.post("/api/chat", async (req, res) => {
 
     const { message, chatId } = req.body;
 
-    /* GOOGLE GEMINI API */
     const response = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
@@ -138,6 +137,7 @@ app.post("/api/chat", async (req, res) => {
         body: JSON.stringify({
           contents: [
             {
+              role: "user",
               parts: [
                 {
                   text: message
@@ -151,21 +151,27 @@ app.post("/api/chat", async (req, res) => {
 
     const data = await response.json();
 
-    console.log("GEMINI RESPONSE:", JSON.stringify(data, null, 2));
+    console.log("FULL GEMINI RESPONSE:");
+    console.log(JSON.stringify(data, null, 2));
 
-    let reply = "No AI response";
+    let reply = "AI failed to respond.";
+
+    /* ---------- SAFER RESPONSE PARSER ---------- */
 
     if (
       data.candidates &&
-      data.candidates[0] &&
+      data.candidates.length > 0 &&
       data.candidates[0].content &&
       data.candidates[0].content.parts &&
-      data.candidates[0].content.parts[0]
+      data.candidates[0].content.parts.length > 0
     ) {
-      reply = data.candidates[0].content.parts[0].text;
+      reply = data.candidates[0].content.parts
+        .map(p => p.text || "")
+        .join("");
     }
 
-    /* SAVE CHAT */
+    /* ---------- SAVE CHAT ---------- */
+
     const chats = readJSON(CHATS_FILE);
 
     chats.push({
@@ -184,6 +190,7 @@ app.post("/api/chat", async (req, res) => {
 
   } catch (err) {
 
+    console.log("SERVER ERROR:");
     console.log(err);
 
     res.json({
@@ -194,10 +201,11 @@ app.post("/api/chat", async (req, res) => {
 
 });
 
-/* ---------------- START SERVER ---------------- */
+/* ---------- START SERVER ---------- */
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("Secure AI SaaS running on http://localhost:" + PORT);
 });
+```
