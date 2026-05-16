@@ -1,48 +1,43 @@
 require("dotenv").config();
 
 const express = require("express");
-const path = require("path");
 const fs = require("fs");
+const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const app = express();
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static("public"));
 
-const USERS_FILE = path.join(__dirname, "data", "users.json");
-const CHATS_FILE = path.join(__dirname, "data", "chats.json");
+const USERS_FILE = "./data/users.json";
+const CHATS_FILE = "./data/chats.json";
 
-// helpers
-function read(file) {
-  return JSON.parse(fs.readFileSync(file, "utf-8"));
+const JWT_SECRET = process.env.JWT_SECRET || "secret123";
+
+/* ---------------- CREATE FILES IF MISSING ---------------- */
+
+if (!fs.existsSync("./data")) {
+  fs.mkdirSync("./data");
 }
 
-function write(file, data) {
+if (!fs.existsSync(USERS_FILE)) {
+  fs.writeFileSync(USERS_FILE, "[]");
+}
+
+if (!fs.existsSync(CHATS_FILE)) {
+  fs.writeFileSync(CHATS_FILE, "[]");
+}
+
+/* ---------------- HELPERS ---------------- */
+
+function readJSON(file) {
+  return JSON.parse(fs.readFileSync(file));
+}
+
+function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-// AUTH MIDDLEWARE
-function auth(req, res, next) {
-  const token = req.headers.authorization;
-
-  if (!token) {
-    return res.status(401).json({
-      error: "No token"
-    });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-
-  } catch {
-    return res.status(401).json({
-      error: "Invalid token"
-    });
-  }
 }
 
 /* ---------------- REGISTER ---------------- */
@@ -51,26 +46,29 @@ app.post("/api/register", async (req, res) => {
 
   const { username, password } = req.body;
 
-  let users = read(USERS_FILE);
+  const users = readJSON(USERS_FILE);
 
-  if (users.find(u => u.username === username)) {
+  const exists = users.find(u => u.username === username);
+
+  if (exists) {
     return res.json({
-      error: "User exists"
+      error: "User already exists"
     });
   }
 
-  const hash = await bcrypt.hash(password, 10);
+  const hashed = await bcrypt.hash(password, 10);
 
   users.push({
     username,
-    password: hash
+    password: hashed
   });
 
-  write(USERS_FILE, users);
+  writeJSON(USERS_FILE, users);
 
   res.json({
     success: true
   });
+
 });
 
 /* ---------------- LOGIN ---------------- */
@@ -79,7 +77,7 @@ app.post("/api/login", async (req, res) => {
 
   const { username, password } = req.body;
 
-  const users = read(USERS_FILE);
+  const users = readJSON(USERS_FILE);
 
   const user = users.find(u => u.username === username);
 
@@ -99,7 +97,7 @@ app.post("/api/login", async (req, res) => {
 
   const token = jwt.sign(
     { username },
-    process.env.JWT_SECRET,
+    JWT_SECRET,
     { expiresIn: "7d" }
   );
 
@@ -108,30 +106,30 @@ app.post("/api/login", async (req, res) => {
     token,
     username
   });
+
 });
 
 /* ---------------- CHAT ---------------- */
 
-app.post("/api/chat", auth, async (req, res) => {
+app.post("/api/chat", async (req, res) => {
 
   try {
 
+    const token = req.headers.authorization;
+
+    if (!token) {
+      return res.json({
+        error: "No token"
+      });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+
     const { message, chatId } = req.body;
 
-    const username = req.user.username;
-
-    let chats = read(CHATS_FILE);
-
-    chats.push({
-      username,
-      chatId,
-      role: "user",
-      text: message,
-      time: Date.now()
-    });
-
+    /* GOOGLE GEMINI API */
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + process.env.GEMINI_API_KEY,
       {
         method: "POST",
         headers: {
@@ -140,7 +138,11 @@ app.post("/api/chat", auth, async (req, res) => {
         body: JSON.stringify({
           contents: [
             {
-              parts: [{ text: message }]
+              parts: [
+                {
+                  text: message
+                }
+              ]
             }
           ]
         })
@@ -149,34 +151,53 @@ app.post("/api/chat", auth, async (req, res) => {
 
     const data = await response.json();
 
-    const aiText =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      data?.error?.message ||
-      "No response";
+    console.log("GEMINI RESPONSE:", JSON.stringify(data, null, 2));
+
+    let reply = "No AI response";
+
+    if (
+      data.candidates &&
+      data.candidates[0] &&
+      data.candidates[0].content &&
+      data.candidates[0].content.parts &&
+      data.candidates[0].content.parts[0]
+    ) {
+      reply = data.candidates[0].content.parts[0].text;
+    }
+
+    /* SAVE CHAT */
+    const chats = readJSON(CHATS_FILE);
 
     chats.push({
-      username,
+      username: decoded.username,
       chatId,
-      role: "ai",
-      text: aiText,
+      user: message,
+      ai: reply,
       time: Date.now()
     });
 
-    write(CHATS_FILE, chats);
+    writeJSON(CHATS_FILE, chats);
 
     res.json({
-      reply: aiText
+      reply
     });
 
   } catch (err) {
 
-    res.status(500).json({
-      error: "Server error",
-      details: err.message
+    console.log(err);
+
+    res.json({
+      error: err.message
     });
+
   }
+
 });
 
-app.listen(3000, () => {
-  console.log("Secure AI SaaS running on http://localhost:3000");
+/* ---------------- START SERVER ---------------- */
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("Secure AI SaaS running on http://localhost:" + PORT);
 });
